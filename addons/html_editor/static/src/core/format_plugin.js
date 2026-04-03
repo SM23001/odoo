@@ -249,8 +249,15 @@ export class FormatPlugin extends Plugin {
      * @returns {boolean}
      */
     isSelectionFormat(format, targetedNodes = this.dependencies.selection.getTargetedNodes()) {
-        const targetedTextNodes = targetedNodes.filter(isTextNode);
         const isFormatted = formatsSpecs[format].isFormatted;
+        const isNonFormattedWhiteSpaces = (node) =>
+            /^(\s|\n)+$/.test(node.nodeValue) && !isFormatted(node, { editable: this.editable });
+        const targetedTextNodes = targetedNodes.filter(
+            (node) =>
+                isTextNode(node) &&
+                !isNonFormattedWhiteSpaces(node) &&
+                this.dependencies.selection.isNodeEditable(node)
+        );
         return (
             targetedTextNodes.length &&
             targetedTextNodes.every(
@@ -461,7 +468,7 @@ export class FormatPlugin extends Plugin {
             unformattedTextNodes[0] &&
             unformattedTextNodes[0].textContent === "\u200B"
         ) {
-            this.dependencies.selection.setCursorStart(unformattedTextNodes[0]);
+            this.dependencies.selection.setCursorEnd(unformattedTextNodes[0]);
         } else if (selectedTextNodes.length) {
             const firstNode = selectedTextNodes[0];
             const lastNode = selectedTextNodes[selectedTextNodes.length - 1];
@@ -701,8 +708,8 @@ export class FormatPlugin extends Plugin {
         }
         return (
             !isSelfClosingElement(node) &&
-            areSimilarElements(node, previousSibling) &&
-            isMergeable(node)
+            isMergeable(node) &&
+            areSimilarElements(node, previousSibling)
         );
     }
 }

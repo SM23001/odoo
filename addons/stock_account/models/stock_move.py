@@ -4,7 +4,7 @@ from collections import defaultdict
 
 from odoo import api, fields, models, _, Command
 from odoo.fields import Domain
-from odoo.tools import OrderedSet
+from odoo.tools import float_is_zero, OrderedSet
 from odoo.exceptions import UserError
 
 VALUATION_DICT = {
@@ -623,6 +623,7 @@ class StockMove(models.Model):
         self.ensure_one()
         return self.product_id.is_storable and self.is_valued\
         and (self.location_dest_id.valuation_account_id or self.location_id.valuation_account_id)\
+        and not float_is_zero(self.quantity, precision_rounding=self.product_uom.rounding)\
         and self.product_id.valuation == 'real_time'
 
     def _should_exclude_for_valuation(self):
@@ -649,3 +650,24 @@ class StockMove(models.Model):
 
     def _get_valued_consigned_qty(self):
         return sum(self.move_line_ids.filtered(lambda l: l._is_consigned_valued_line()).mapped('quantity_product_uom'))
+
+    def _get_price_unit_delivery(self):
+        """ Computes the unit price for a set of moves, using a weighted average between
+        dropshipped and non dropshipped moves.
+        """
+        dropship_moves = self.filtered(lambda m: m._is_dropshipped() or m._is_dropshipped_returned())
+        dropship_quantity = sum(m._get_valued_qty() for m in dropship_moves)
+        dropship_price_unit = dropship_moves._get_price_unit_dropshipped()
+        regular_moves = self - dropship_moves
+        regular_quantity = sum(m._get_valued_qty() for m in regular_moves)
+        regular_price_unit = regular_moves._get_price_unit()
+        total_quantity = dropship_quantity + regular_quantity
+        if not total_quantity:
+            return self._get_price_unit()
+        return (dropship_quantity * dropship_price_unit + regular_quantity * regular_price_unit) / total_quantity
+
+    def _get_price_unit_dropshipped(self):
+        """ Returns the unit price to value the dropshipped moves."""
+        total_value = sum(m._get_value() for m in self)
+        total_qty = sum(m._get_valued_qty() for m in self)
+        return total_value / total_qty if total_qty else 0
