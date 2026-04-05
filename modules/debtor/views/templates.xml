@@ -43,7 +43,7 @@
 
 
 <!--
-        <template id="listing">
+        <template id="listing">delete
           <ul>
             <li t-foreach="objects" t-as="object">
               <a t-attf-href="#{ root }/objects/#{ object.id }">
