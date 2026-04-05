@@ -15,3 +15,12 @@
 #         for record in self:
 #             record.value2 = float(record.value) / 100
 
+from odoo import models, fields
+
+class Person(models.Model):
+    _name = "debtor.person"
+    _description = "Person debtor"
+
+    name = fields.Char(string="Nombre", required=True)
+    phone = fields.Char(string="Tel", required=True)
+    #age = fields.Integer(string="Edad")
