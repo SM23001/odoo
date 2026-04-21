@@ -898,6 +898,61 @@ class TestAngloSaxonValuation(TestStockValuationCommon, TestSaleStockCommon):
         self.assertEqual(cogs_aml.debit, 56)
         self.assertEqual(cogs_aml.credit, 0)
 
+    def test_fifo_delivered_invoice_post_delivery_same_product_multi_lines(self):
+        """Each separately invoiced SO line should keep the FIFO cost of its own stock move,
+        even when another line on the same sale order uses the same product."""
+        self.product_fifo_auto.invoice_policy = 'delivery'
+
+        self._fifo_in_one_eight_one_ten()
+
+        sale_order = self.env['sale.order'].sudo().create({
+            'partner_id': self.owner.id,
+            'warehouse_id': self.warehouse.id,
+            'order_line': [
+                Command.create({
+                    'name': 'FIFO line 1',
+                    'product_id': self.product_fifo_auto.id,
+                    'product_uom_qty': 1,
+                    'price_unit': 20,
+                }),
+                Command.create({
+                    'name': 'FIFO line 2',
+                    'product_id': self.product_fifo_auto.id,
+                    'product_uom_qty': 1,
+                    'price_unit': 30,
+                }),
+            ],
+        })
+        sale_order.action_confirm()
+
+        first_line, second_line = sale_order.order_line.sorted('id')
+        first_delivery = sale_order.picking_ids
+        first_delivery.move_ids.filtered(lambda move: move.sale_line_id == second_line).quantity = 0
+        first_delivery.move_ids.picked = True
+        result = first_delivery.button_validate()
+        Form(self.env[result['res_model']].with_context(result['context'])).save().process()
+
+        invoice_1 = sale_order._create_invoices()
+        invoice_1.invoice_date = fields.Date.today()
+        invoice_1.action_post()
+        self.assertRecordValues(invoice_1.line_ids.filtered(lambda line: line.display_type == 'cogs'), [
+            {'account_id': self.account_stock_valuation.id, 'debit': 0, 'credit': 8},
+            {'account_id': self.account_expense.id, 'debit': 8, 'credit': 0},
+        ])
+
+        second_delivery = sale_order.picking_ids.filtered(lambda picking: picking.state != 'done')
+        second_delivery.move_ids.filtered(lambda move: move.sale_line_id == first_line).quantity = 0
+        second_delivery.move_ids.picked = True
+        second_delivery.button_validate()
+
+        invoice_2 = sale_order._create_invoices()
+        invoice_2.invoice_date = fields.Date.today()
+        invoice_2.action_post()
+        self.assertRecordValues(invoice_2.line_ids.filtered(lambda line: line.display_type == 'cogs'), [
+            {'account_id': self.account_stock_valuation.id, 'debit': 0, 'credit': 10},
+            {'account_id': self.account_expense.id, 'debit': 10, 'credit': 0},
+        ])
+
     def test_fifo_delivered_invoice_post_delivery_4(self):
         """Receive 8@10. Sale order 10@12. Deliver and also invoice it without receiving the 2 missing.
         Now, receive 2@12. Make sure price difference is correctly reflected in expense account at
@@ -1584,4 +1639,23 @@ class TestAngloSaxonValuation(TestStockValuationCommon, TestSaleStockCommon):
         self.assertRecordValues(backorder_cogs_aml, [
             {'account_id': self.account_stock_valuation.id, 'debit': 0.0, 'credit': 60.0},
             {'account_id': self.account_expense.id, 'debit': 60.0, 'credit': 0.0},
+        ])
+
+    def test_multi_steps_partially_delivered(self):
+        """Checks that when there is multi steps delivery, if one of the moves of the chain
+        is validated but not the other(s) we fallback on the standard price for the cogs.
+        """
+        self.warehouse.delivery_steps = 'pick_ship'
+        self._make_in_move(self.product_avco_auto, 1, 10)
+        # create a SO
+        sale_order = self._so_deliver(self.product_avco_auto, 1, 1, picking=False)
+        # validate only the first picking of the chain
+        sale_order.picking_ids.button_validate()
+        # validate invoice
+        invoice = sale_order._create_invoices()
+        invoice.action_post()
+        cogs_aml = invoice.line_ids.filtered(lambda l: l.display_type == 'cogs').sorted('debit')
+        self.assertRecordValues(cogs_aml, [
+            {'account_id': self.account_stock_valuation.id, 'debit': 0.0, 'credit': 10.0},
+            {'account_id': self.account_expense.id, 'debit': 10.0, 'credit': 0.0},
         ])

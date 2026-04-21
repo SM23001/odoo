@@ -751,7 +751,9 @@ class AccountMove(models.Model):
         groups="account.group_account_invoice,account.group_account_readonly",
     )
     duplicated_ref_ids = fields.Many2many(comodel_name='account.move', compute='_compute_duplicated_ref_ids')
+    # used to check if any moves in duplicated_ref_ids are in the 'Draft' state.
     is_draft_duplicated_ref_ids = fields.Boolean(compute="_compute_is_draft_duplicated_ref_ids")
+    is_exact_move_duplicate = fields.Boolean(compute='_compute_is_draft_duplicated_ref_ids')
     need_cancel_request = fields.Boolean(compute='_compute_need_cancel_request')
 
     show_update_fpos = fields.Boolean(string="Has Fiscal Position Changed", store=False)  # True if the fiscal position was changed
@@ -1449,7 +1451,10 @@ class AccountMove(models.Model):
     @api.depends('suitable_journal_ids')
     def _compute_show_journal(self):
         for move in self:
-            move.show_journal = len(move.suitable_journal_ids) > 1
+            move.show_journal = (
+                len(move.suitable_journal_ids) > 1
+                or move.journal_id and move.journal_id not in move.suitable_journal_ids
+            )
 
     def _compute_payments_widget_to_reconcile_info(self):
 
@@ -1467,6 +1472,7 @@ class AccountMove(models.Model):
             domain = [
                 ('account_id', 'in', pay_term_lines.account_id.ids),
                 ('parent_state', '=', 'posted'),
+                *move._check_company_domain(move.company_id),
                 ('partner_id', '=', move.commercial_partner_id.id),
                 ('reconciled', '=', False),
                 ('balance', '<' if move.is_inbound() else '>', 0.0),
@@ -2054,7 +2060,7 @@ class AccountMove(models.Model):
         for move in self:
             move.quick_encoding_vals = move._get_quick_edit_suggestions()
 
-    @api.depends('ref', 'move_type', 'partner_id', 'invoice_date', 'tax_totals')
+    @api.depends('ref', 'move_type', 'partner_id', 'invoice_date', 'tax_totals', 'currency_id')
     def _compute_duplicated_ref_ids(self):
         move_to_duplicate_move = self._fetch_duplicate_reference()
         for move in self:
@@ -2067,7 +2073,7 @@ class AccountMove(models.Model):
         if not moves:
             return {}
 
-        used_fields = ("company_id", "partner_id", "commercial_partner_id", "ref", "move_type", "invoice_date", "state", "amount_total")
+        used_fields = ("company_id", "partner_id", "commercial_partner_id", "ref", "move_type", "invoice_date", "state", "amount_total", "currency_id")
 
         self.env["account.move"].flush_model(used_fields)
 
@@ -2144,6 +2150,7 @@ class AccountMove(models.Model):
                    AND move.id != duplicate_move.id
                    AND duplicate_move.state IN %(matching_states)s
                    AND move.move_type = duplicate_move.move_type
+                   AND move.currency_id = duplicate_move.currency_id
                    AND (
                            move.commercial_partner_id = duplicate_move.commercial_partner_id
                            OR (move.commercial_partner_id IS NULL AND duplicate_move.state = 'draft')
@@ -2166,6 +2173,15 @@ class AccountMove(models.Model):
     def _compute_is_draft_duplicated_ref_ids(self):
         for move in self:
             move.is_draft_duplicated_ref_ids = any(duplicate_move.state == 'draft' for duplicate_move in move.duplicated_ref_ids)
+            move.is_exact_move_duplicate = any(
+                move.ref and move.ref == dup.ref
+                and move.move_type == dup.move_type
+                and move.partner_id == dup.partner_id
+                and move.invoice_date == dup.invoice_date
+                and move.amount_total == dup.amount_total
+                and move.is_purchase_document()
+                for dup in move.duplicated_ref_ids
+            )
 
     @api.depends('company_id')
     def _compute_display_qr_code(self):
@@ -5245,13 +5261,16 @@ class AccountMove(models.Model):
         self.ensure_one()
         if self.env.context.get('name_as_amount_total'):
             currency_amount = self.currency_id.format(self.amount_total)
-            if self.state == 'posted':
+            if self.is_sale_document(include_receipts=True) and self.state == "posted":
                 ref = f" - {self.ref}" if self.ref else ""
                 return _("%(name)s%(ref)s at %(currency_amount)s", name=(self.name), ref=ref, currency_amount=currency_amount)
-            if self.name:
-                return _("%(name)s - Draft at (%(currency_amount)s)", name=(self.name), currency_amount=currency_amount)
-            else:
-                return _("Draft (%(currency_amount)s)", currency_amount=currency_amount)
+            label = (self.ref or self.name or "") if self.is_purchase_document(include_receipts=True) else (self.name or "")
+            if label:
+                if self.state == 'draft':
+                    return _("%(label)s at %(currency_amount)s (Draft)", label=label, currency_amount=currency_amount)
+                return _("%(label)s at %(currency_amount)s", label=label, currency_amount=currency_amount)
+            return _("Draft (%(currency_amount)s)", currency_amount=currency_amount)
+
         name = ''
         if self.state == 'draft':
             name += {
@@ -5742,7 +5761,7 @@ class AccountMove(models.Model):
 
     def _link_bill_origin_to_purchase_orders(self, timeout=10):
         for move in self.filtered(lambda m: m.move_type in self.get_purchase_types()):
-            references = [ref.strip() for ref in re.split(r"[ ,]+", move.invoice_origin)] if move.invoice_origin else []
+            references = re.findall(r"[^,\s]+", move.invoice_origin or "")
             move._find_and_set_purchase_orders(references, move.partner_id.id, move.amount_total, timeout=timeout)
         return self
 
@@ -7055,17 +7074,17 @@ class AccountMove(models.Model):
             force_record_name=force_record_name,
         )
         record = render_context['record']
-        subtitles = [f"{record.name} - {record.partner_id.name}" if record.partner_id.name else record.name]
+        subtitles = [f"{record.display_name} - {record.partner_id.name}" if record.partner_id.name else record.display_name]
         if self.is_invoice(include_receipts=True):
             # Only show the amount in emails for non-miscellaneous moves. It might confuse recipients otherwise.
             if self.invoice_date_due and self.payment_state not in ('in_payment', 'paid'):
                 subtitles.append(_(
                     '%(amount)s due\N{NO-BREAK SPACE}%(date)s',
-                    amount=format_amount(self.env, self.amount_total, self.currency_id, lang_code=render_context.get('lang')),
+                    amount=format_amount(self.env, self.amount_total or self.tax_totals.get('total_amount_currency', 0), self.currency_id, lang_code=render_context.get('lang')),
                     date=format_date(self.env, self.invoice_date_due, lang_code=render_context.get('lang')),
                 ))
             else:
-                subtitles.append(format_amount(self.env, self.amount_total, self.currency_id, lang_code=render_context.get('lang')))
+                subtitles.append(format_amount(self.env, self.amount_total or self.tax_totals.get('total_amount_currency', 0), self.currency_id, lang_code=render_context.get('lang')))
         render_context['subtitles'] = subtitles
         return render_context
 
