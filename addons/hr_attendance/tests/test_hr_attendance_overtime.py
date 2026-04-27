@@ -5,6 +5,7 @@ from freezegun import freeze_time
 from odoo import Command
 from odoo.tests import Form, HttpCase, new_test_user
 from odoo.tests.common import tagged
+from odoo.tools import float_compare
 
 
 @tagged('hr_attendance_overtime')
@@ -1416,3 +1417,78 @@ class TestHrAttendanceOvertime(HttpCase):
         self.assertIn(own_reader_employee, admin_lines.employee_id)
         self.assertIn(officer_employee, admin_lines.employee_id)
         self.assertIn(self.other_employee, admin_lines.employee_id)
+
+    def test_regenerate_overtime_employee_unlink_overtimes_timezones(self):
+        """ Verifies that the overtimes are correctly unlinked when the calendar has a different timezone. """
+        calendar = self.env['resource.calendar'].create({
+            'name': 'American calendar',
+            'attendance_ids': [
+                (0, 0, {'name': 'Sunday', 'dayofweek': '6', 'hour_from': 8, 'hour_to': 15, 'day_period': 'full_day'}),
+            ],
+            'tz': 'America/New_York',
+        })
+        self.employee.resource_calendar_id = calendar
+        attendance = self.env['hr.attendance'].create([{
+            'employee_id': self.employee.id,
+            'check_in': datetime(2025, 11, 16, 10, 0),  # Sunday
+            'check_out': datetime(2025, 11, 17, 1, 0),  # Monday
+        }])
+
+        overtimes = attendance._linked_overtimes()
+        self.assertEqual(len(overtimes), 2)
+        self.assertEqual(overtimes.mapped('duration'), [7, 1])
+        self.assertEqual(overtimes.mapped('date'), [date(2025, 11, 16), date(2025, 11, 17)])
+
+        self.ruleset.action_regenerate_overtimes()
+
+        overtimes = attendance._linked_overtimes()
+        self.assertEqual(len(overtimes), 2)
+
+    def test_updating_overtimes_on_midnight_boundary(self):
+        """ Ensure that we can update overtimes for attendances that start
+            and/or stop on a midnight boundary in the user's TZ.
+
+            We'll do this with and without the ruleset's company's "Absence
+            Management" setting enabled.
+        """
+        EXPECTED_DAILY_WORKING_HOURS = 8
+        FLOAT_COMPARISON_PRECISION_DIGITS = 2
+        attendances = self.env['hr.attendance'].create([
+            {
+                "employee_id": self.europe_employee.id,
+                "check_in": datetime(2026, 4, 1, 22, 0, 0),   # Start at midnight in Brussels
+                "check_out": datetime(2026, 4, 2, 13, 0, 0),
+            },
+            {
+                "employee_id": self.europe_employee.id,
+                "check_in": datetime(2026, 4, 3, 6, 0, 0),
+                "check_out": datetime(2026, 4, 3, 22, 0, 0),  # End at midnight in Brussels
+            },
+        ])
+        # Add the overtime rule specifically after we create the attendance
+        # records so that we can test the update of overtimes for attendances
+        # that have already been made.
+        self.ruleset.write({
+            'rule_ids': [Command.create({
+                    'name': 'Rule with expected hours',
+                    'base_off': 'quantity',
+                    'expected_hours_from_contract': False,
+                    'expected_hours': EXPECTED_DAILY_WORKING_HOURS,
+                    'quantity_period': 'day',
+                })],
+        })
+
+        def assert_overtime_durations(attendances):
+            for attendance in attendances:
+                hours_after_daily_working_hours = attendance.worked_hours - EXPECTED_DAILY_WORKING_HOURS
+                result = float_compare(
+                    attendance.overtime_hours,
+                    hours_after_daily_working_hours,
+                    precision_digits=FLOAT_COMPARISON_PRECISION_DIGITS)
+                self.assertEqual(result, 0, "Overtime hours were not consistent with hours worked and the expected daily working hours.")
+
+        attendances._update_overtime()
+        assert_overtime_durations(attendances)
+        self.ruleset.company_id.absence_management = True
+        attendances._update_overtime()
+        assert_overtime_durations(attendances)
