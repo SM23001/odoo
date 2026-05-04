@@ -1,0 +1,62 @@
+# Odoo 19 — production only (demos off, DB list off, workers, no --dev / ODOO_DEV).
+# PostgreSQL on another host (default PGHOST 192.168.1.32).
+#
+# 1. Copy .env.example to .env — secrets + tuning. Do not set ODOO_DEV or debug log level for prod.
+# 2. VM Postgres: listen_addresses, pg_hba.conf, firewall; PGSSLMODE=require when DB uses TLS.
+# 3. TLS on a reverse proxy; forward 8069 (HTTP) and 8072 (longpolling). ODOO_DEV is forced empty below.
+# 4. Custom addons: host ./modules → /mnt/extra-addons (add each new module as modules/<technical_name>/).
+
+services:
+  odoo:
+    build: .
+    image: odoo:19-local
+    container_name: odoo19
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 60s
+    ports:
+      - "${ODOO_HTTP_PORT:-8069}:8069"
+      - "${ODOO_LONGPOLLING_PORT:-8072}:8072"
+    environment:
+      PGHOST: ${PGHOST:-192.168.1.32}
+      PGPORT: "${PGPORT:-5432}"
+      PGUSER: ${PGUSER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      PGDATABASE: ${ODOO_DATABASE:-appdb}
+      PGSSLMODE: ${PGSSLMODE:-prefer}
+      ODOO_ADMIN_PASSWD: ${ODOO_ADMIN_PASSWD:?Set ODOO_ADMIN_PASSWD in .env (strong master password)}
+      # Never enable dev features (xml/qweb/reload/…) in production; blocks accidental ODOO_DEV from the host.
+      ODOO_DEV: ""
+      # Production tuning (override in .env; see https://www.odoo.com/documentation/master/administration/install/deploy.html)
+      ODOO_LOG_LEVEL: ${ODOO_LOG_LEVEL:-info}
+      ODOO_MAX_CRON_THREADS: ${ODOO_MAX_CRON_THREADS:-1}
+      ODOO_LIMIT_TIME_CPU: ${ODOO_LIMIT_TIME_CPU:-120}
+      ODOO_LIMIT_TIME_REAL: ${ODOO_LIMIT_TIME_REAL:-240}
+      ODOO_LIMIT_MEMORY_SOFT: ${ODOO_LIMIT_MEMORY_SOFT:-2147483648}
+      ODOO_LIMIT_MEMORY_HARD: ${ODOO_LIMIT_MEMORY_HARD:-2684354560}
+    volumes:
+      - odoo_filestore:/var/lib/odoo
+      - ./modules:/mnt/extra-addons:ro
+    command:
+      - odoo
+      - --data-dir=/var/lib/odoo
+      - --addons-path=/opt/odoo/odoo/addons,/mnt/extra-addons
+      - --without-demo=all
+      - --proxy-mode
+      - --no-database-list
+      - --db-filter=^${ODOO_DATABASE:-appdb}$$
+      - --workers=${ODOO_WORKERS:-4}
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8069/web/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  odoo_filestore:
