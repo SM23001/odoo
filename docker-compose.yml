@@ -41,7 +41,7 @@ services:
       - odoo
       - --data-dir=/var/lib/odoo
       - --addons-path=/opt/odoo/odoo/addons,/mnt/extra-addons
-      - --without-demo=all
+      - --without-demo #=all 
       - --proxy-mode
       - --no-database-list
       - --db-filter=^${ODOO_DATABASE:-appdb}$$
