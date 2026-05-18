@@ -275,11 +275,11 @@ class AccountAccount(models.Model):
                     accounts="\n".join(f"- {account.display_name}" for account in accounts_without_company),
                 ),
             )
+        # Need to invalidate the sudo cache as we might have just written on `company_ids`
+        self.invalidate_recordset(fnames=['company_ids'])
         if self.filtered(lambda a: a.account_type == 'asset_cash' and len(a.company_ids) > 1):
             raise ValidationError(_("Bank & Cash accounts cannot be shared between companies."))
 
-        # Need to invalidate the sudo cache as we might have just written on `company_ids`
-        self.invalidate_recordset(fnames=['company_ids'])
         for companies, accounts in self.grouped(lambda a: a.company_ids).items():
             if self.env['account.move.line'].sudo().search_count([
                 ('account_id', 'in', accounts.ids),
@@ -774,8 +774,18 @@ class AccountAccount(models.Model):
 
     @api.model
     def _get_most_frequent_account_for_partner(self, company_id, partner_id, move_type=None):
-        most_frequent_account = self._get_most_frequent_accounts_for_partner(company_id, partner_id, move_type, filter_never_user_accounts=True, limit=1)
-        return most_frequent_account[0] if most_frequent_account else False
+
+        cache = self.env.cr.cache.setdefault('most_frequent_accounts_for_partner', {})
+        key = (company_id, partner_id, move_type)
+
+        if key not in cache:
+            most_frequent_account = self._get_most_frequent_accounts_for_partner(
+                company_id, partner_id, move_type,
+                filter_never_user_accounts=True, limit=1,
+            )
+            cache[key] = most_frequent_account[0] if most_frequent_account else False
+
+        return cache[key]
 
     @api.model
     def _order_accounts_by_frequency_for_partner(self, company_id, partner_id, move_type=None):

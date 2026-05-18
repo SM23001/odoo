@@ -8,6 +8,7 @@ import {
 } from "@html_editor/utils/color";
 import { fillEmpty, unwrapContents } from "@html_editor/utils/dom";
 import {
+    isElement,
     isEmptyBlock,
     isIconElement,
     isRedundantElement,
@@ -220,7 +221,10 @@ export class ColorPlugin extends Plugin {
                 }
                 const li = closestElement(node, "li");
                 if (li && color && this.dependencies.selection.areNodeContentsFullySelected(li)) {
-                    return rgbaToHex(li.style.color).toLowerCase() !== hexColor;
+                    const existingColor = li.style.color
+                    ? li.style.color
+                    : [...li.classList].find((cls) => TEXT_CLASSES_REGEX.test(cls));
+                    return rgbaToHex(existingColor).toLowerCase() !== hexColor;
                 }
                 return true;
             })
@@ -253,7 +257,12 @@ export class ColorPlugin extends Plugin {
                 const children = font && descendants(font);
                 const hasInlineGradient = font && isColorGradient(font.style["background-image"]);
                 const isFullySelected =
-                    children && children.every((child) => selectedNodes.includes(child));
+                    children &&
+                    children.every(
+                        (child) =>
+                            selectedNodes.includes(child) ||
+                            selectedNodes.some((node) => isElement(node) && node.contains(child))
+                    );
                 const isTextGradient =
                     hasInlineGradient && font.classList.contains("text-gradient");
                 const shouldReplaceExistingGradient =
