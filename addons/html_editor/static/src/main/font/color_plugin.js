@@ -179,7 +179,7 @@ export class ColorPlugin extends Plugin {
             this.dependencies.selection.setSelection(
                 {
                     anchorNode: zws,
-                    anchorOffset: 0,
+                    anchorOffset: 1,
                 },
                 { normalize: false }
             );
@@ -382,7 +382,7 @@ export class ColorPlugin extends Plugin {
                             font.style.webkitTextFillColor = color;
                         }
                     }
-                    if (node.textContent) {
+                    if (node.nodeName === "BR" || node.textContent) {
                         font.appendChild(node);
                     } else {
                         fillEmpty(font);

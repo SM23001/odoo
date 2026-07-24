@@ -332,6 +332,9 @@ class TestWithholdingAndPensionFundTaxes(TestItEdi):
             ))
 
     def test_pension_fund_taxes_import_zero_vat_rate(self):
+        """ Test that pension fund taxes with a 0.00% VAT rate are correctly imported."""
+
+        self.inps_purchase_tax.write({'l10n_it_exempt_reason': 'N2.1'})
         invoice = self._assert_import_invoice('IT00470550013_pfun3.xml', [{
             'invoice_date': datetime.date(2022, 3, 24),
             'invoice_date_due': datetime.date(2022, 3, 24),
@@ -457,6 +460,25 @@ class TestWithholdingAndPensionFundTaxes(TestItEdi):
             Payment amount:  Document total                            780.00
         """
         self._assert_export_invoice(self.inps_tax_invoice, 'inps_tax_invoice.xml')
+
+    def test_multiple_pension_funds_per_line(self):
+        """Test that multiple pension fund taxes can be applied to a single invoice line."""
+
+        invoice = self._create_invoice(
+            partner_id=self.italian_partner_a,
+            company_id=self.company,
+            invoice_date='2023-10-01',
+            invoice_line_ids=[
+                self._prepare_invoice_line(price_unit=1000.0, tax_ids=[
+                    self.company.account_sale_tax_id.id,
+                    self.pension_fund_sale_tax.id,
+                    self.enasarco_sale_tax.id,
+                ])
+            ]
+        )
+
+        errors = invoice._l10n_it_edi_export_taxes_check()
+        self.assertEqual(len(errors), 0)
 
     ####################################################
     # RA 23% WITHHOLDING TAX

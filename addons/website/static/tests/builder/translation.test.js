@@ -218,6 +218,18 @@ test("color span is inserted in a.btn (and s_badge) with a background to show th
     expect(":iframe .s_badge .o_translation_state_inner_span").toHaveCount(1);
 });
 
+test("adjacent s_badge elements should not be merged in translate mode", async () => {
+    const { getEditor } = await setupSidebarBuilderForTranslation({
+        websiteContent: getTranslateEditable({
+            inWrap: `<span class="s_badge badge rounded-pill text-bg-primary">Badge 1</span><span class="s_badge badge rounded-pill text-bg-primary">Badge 2</span>`,
+        }),
+    });
+    const editor = getEditor();
+    // Trigger mergeAdjacentInlines.
+    editor.shared.history.addStep();
+    expect(editor.editable.querySelectorAll(".s_badge")).toHaveLength(2);
+});
+
 test("translate attribute", async () => {
     const resultSave = [];
     onRpc("/website/field/translation/update", async (data) => {
@@ -751,6 +763,20 @@ test("trying to translate an element inside a .o_not_editable should add a notif
     await contains(":iframe [data-oe-id='10']").click();
 });
 
+test("shouldn't update the translation of an attribute when closing the dialog", async () => {
+    await setupSidebarBuilderForTranslation({
+        websiteContent: `
+            <img src="/web/image/website.s_text_image_default_image" class="img img-fluid mx-auto rounded o_editable" loading="lazy" title="<span data-oe-model=&quot;ir.ui.view&quot; data-oe-id=&quot;544&quot; data-oe-field=&quot;arch_db&quot; data-oe-translation-state=&quot;to_translate&quot; data-oe-translation-source-sha=&quot;sourceSha&quot;>old title</span>" style=""></img>
+        `,
+    });
+    await contains(".modal .btn:contains(Ok, never show me this again)").click();
+    await contains(":iframe img").click();
+    expect(".modal .modal-body input").toHaveCount(1);
+    await contains(".modal .modal-body input").edit("new title");
+    await contains(".modal .btn-close").click();
+    expect(":iframe img").toHaveAttribute("title", "old title");
+});
+
 test("trying to translate an attribute of an image inside a .o_not_editable should add a notification", async () => {
     expect.assertions(2);
     mockService("notification", {
@@ -780,6 +806,22 @@ test("it should be possible to translate the attribute of an image that has the 
     });
     await contains(".modal .btn:contains(Ok, never show me this again)").click();
     await contains(":iframe img").click();
+    expect(".modal .modal-body input").toHaveCount(1);
+});
+
+test("placeholders aren't translated on elements that aren't input or textarea", async () => {
+    await setupSidebarBuilderForTranslation({
+        websiteContent: `
+            <div class="div-target o_editable" placeholder="<span data-oe-model=&quot;ir.ui.view&quot; data-oe-id=&quot;544&quot; data-oe-field=&quot;arch_db&quot; data-oe-translation-state=&quot;to_translate&quot; data-oe-translation-source-sha=&quot;sourceSha&quot;>placeholder</span>"></div>
+            <input class="input-target" placeholder="<span data-oe-model=&quot;ir.ui.view&quot; data-oe-id=&quot;544&quot; data-oe-field=&quot;arch_db&quot; data-oe-translation-state=&quot;to_translate&quot; data-oe-translation-source-sha=&quot;sourceSha&quot;>placeholder</span>"></input>
+        `,
+    });
+    await contains(".modal .btn:contains(Ok, never show me this again)").click();
+    expect(":iframe .div-target").not.toHaveClass("o_translatable_attribute");
+    await contains(":iframe .div-target").click();
+    expect(".modal .modal-body input").toHaveCount(0);
+    expect(":iframe .input-target").toHaveClass("o_translatable_attribute");
+    await contains(":iframe .input-target").click();
     expect(".modal .modal-body input").toHaveCount(1);
 });
 

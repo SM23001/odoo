@@ -82,7 +82,7 @@ export class PosOrderAccounting extends Base {
     get remainingDue() {
         const isNegative = this.totalDue < 0;
         const total = this.totalDue;
-        const remaining = total - this.amountPaid;
+        const remaining = this.currency.round(total - this.amountPaid);
 
         // Amount paid covers the total due
         if ((isNegative && remaining >= 0) || (!isNegative && remaining <= 0)) {
@@ -126,7 +126,7 @@ export class PosOrderAccounting extends Base {
     get appliedRounding() {
         const total = this.prices.taxDetails.total_amount_no_rounding;
         const isNegative = this.amountPaid > total;
-        const remaining = total - this.amountPaid;
+        const remaining = this.currency.round(total - this.amountPaid);
         const amount =
             this.orderIsRounded &&
             this.config.rounding_method.asymmetricRound(total < 0 ? -remaining : remaining) == 0
@@ -159,6 +159,9 @@ export class PosOrderAccounting extends Base {
     }
     get priceIncl() {
         return this.prices.taxDetails.total_amount_no_rounding;
+    }
+    get roundedPriceIncl() {
+        return this.prices.taxDetails.total_amount_currency;
     }
     get priceExcl() {
         return this.prices.taxDetails.base_amount;
@@ -305,7 +308,10 @@ export class PosOrderAccounting extends Base {
 
         // Cash rounding is added only if the document needs to be globaly rounded.
         // See cash_rounding and only_round_cash_method config fields.
-        const cashRounding = this.config.cash_rounding ? this.config.rounding_method : null;
+        const cashRounding =
+            this.config.cash_rounding && this.config.rounding_method
+                ? this.config.rounding_method
+                : null;
         const data = accountTaxHelpers.get_tax_totals_summary(baseLines, currency, company, {
             cash_rounding: cashRounding,
         });

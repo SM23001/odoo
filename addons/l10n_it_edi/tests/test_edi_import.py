@@ -114,6 +114,54 @@ class TestItEdiImport(TestItEdi):
             ],
         }], applied_xml)
 
+    def test_receive_vendor_bill_applies_fiscal_position(self):
+        """ The fiscal position set on the bill remaps the taxes decoded from
+            the XML, matching what a manual line entry produces.
+        """
+        company = self.company
+        fiscal_position = self.env['account.fiscal.position'].with_company(company).create({
+            'name': 'Remap 22% purchase',
+        })
+        # The tax the importer decodes from a 22% line, before any mapping. The
+        # search is the same one _l10n_it_edi_search_tax_for_import runs.
+        source_tax = self.env['account.tax'].search([
+            *self.env['account.tax']._check_company_domain(company),
+            ('amount_type', '=', 'percent'),
+            ('amount', '=', 22.0),
+            ('type_tax_use', '=', 'purchase'),
+            ('l10n_it_exempt_reason', '=', False),
+        ]).filtered(
+            lambda tax: all(rl.factor_percent >= 0 for rl in tax.invoice_repartition_line_ids)
+        )[0]
+        # A distinct rate so the importer's search can never select it directly:
+        # it can only land on the line through the fiscal position mapping.
+        mapped_tax = self.env['account.tax'].with_company(company).create({
+            'name': '10% mapped by fiscal position',
+            'amount': 10.0,
+            'amount_type': 'percent',
+            'type_tax_use': 'purchase',
+            'fiscal_position_ids': [Command.set(fiscal_position.ids)],
+            'original_tax_ids': [Command.set(source_tax.ids)],
+        })
+        self.env['res.partner'].with_company(company).create({
+            'name': 'SELLER FP SRL',
+            'vat': 'IT12345670017',
+            'l10n_it_codice_fiscale': '12345670017',
+            'country_id': self.env.ref('base.it').id,
+            'is_company': True,
+            'property_account_position_id': fiscal_position.id,
+        })
+
+        invoice = self._assert_import_invoice('IT01234567890_FPMAP.xml', [{
+            'move_type': 'in_invoice',
+            'amount_untaxed': 100.0,
+            'invoice_line_ids': [{
+                'price_unit': 100.0,
+                'tax_ids': mapped_tax.ids,
+            }],
+        }])
+        self.assertEqual(invoice.fiscal_position_id, fiscal_position)
+
     def test_receive_vendor_bill_sconto_maggiorazione(self):
         """ Test a sample e-invoice file with
         ScontoMaggiorazione on lines
@@ -290,11 +338,10 @@ class TestItEdiImport(TestItEdi):
     def test_cron_receives_bill_in_preferred_journal(self):
         """ Ensure that the received bill is in the preferred journal set from the setting. """
         preferred_journal = self.company_data_2['default_journal_purchase'].copy()
+        preferred_journal.default_account_id = False
         filename = 'IT01234567890_FPR02.xml'
 
         with self.assertRaisesRegex(ValidationError, "The Italian default purchase journal requires a default account."):
-            # When copying journal, the default_account_id are not copied.
-            # It should raise an error when we try to set the company's default purchase journal in the Settings.
             self.company.l10n_it_edi_purchase_journal_id = preferred_journal
 
         preferred_journal.default_account_id = self.company_data_2['default_journal_purchase'].default_account_id.id
@@ -340,7 +387,7 @@ class TestItEdiImport(TestItEdi):
         })
         self.env['ir.attachment'].with_company(other_company).create({
             'name': filename,
-            'datas': self.fake_test_content,
+            'raw': self.fake_test_content,
             'res_model': 'account.move',
             'res_id': invoice.id,
             'res_field': 'l10n_it_edi_attachment_file',
@@ -935,3 +982,90 @@ class TestItEdiImport(TestItEdi):
         self._assert_import_invoice('IT01654010345_10099.xml', [single_body_data] * 3)
         # Check p7m file
         self._assert_import_invoice('IT01654010345_10099.xml.p7m', [single_body_data] * 3)
+
+    def test_import_simplified_invoice_zero_base(self):
+        """Test the import of a xml bill where the total amount equals the tax amount (Importo == Imposta)."""
+
+        self._assert_import_invoice('IT01234567890_FPR05.xml', [{
+            'move_type': 'in_refund',
+            'amount_untaxed': 0.0,
+            'invoice_line_ids': [
+                {
+                    'name': 'IVA ANNO PRECEDENTE',
+                    'quantity': 1.0,
+                    'price_unit': 9.20,
+                },
+                {
+                    'name': 'TOTALE IMPORTO IN ADDEBITO',
+                    'quantity': 1.0,
+                    'price_unit': -9.20,
+                }
+            ],
+        }])
+
+    def test_import_pension_fund_specific_natura(self):
+        """ Ensure that the pension fund tax is only applied to lines matching the VAT rate and the exemption reason (Natura) """
+
+        self.env = self.env['base'].with_company(self.company_data_2['company']).env
+        pension_tax = self.env['account.tax'].search([
+            ('amount', '=', 4.0),
+            ('type_tax_use', '=', 'purchase'),
+        ], limit=1)
+        pension_tax.write({'l10n_it_exempt_reason': 'N2.1'})
+
+        applied_xml = """
+            <xpath expr="//FatturaElettronicaBody/DatiBeniServizi" position="replace">
+                <DatiBeniServizi>
+                    <DettaglioLinee>
+                        <NumeroLinea>1</NumeroLinea>
+                        <Descrizione>Compenso professionale</Descrizione>
+                        <Quantita>1.00</Quantita>
+                        <PrezzoUnitario>750.00</PrezzoUnitario>
+                        <PrezzoTotale>750.00</PrezzoTotale>
+                        <AliquotaIVA>0.00</AliquotaIVA>
+                        <Natura>N2.1</Natura>
+                    </DettaglioLinee>
+                    <DettaglioLinee>
+                        <NumeroLinea>2</NumeroLinea>
+                        <Descrizione>Imposta di bollo</Descrizione>
+                        <Quantita>1.00</Quantita>
+                        <PrezzoUnitario>2.00</PrezzoUnitario>
+                        <PrezzoTotale>2.00</PrezzoTotale>
+                        <AliquotaIVA>0.00</AliquotaIVA>
+                        <Natura>N1</Natura>
+                    </DettaglioLinee>
+                    <DatiRiepilogo>
+                        <AliquotaIVA>0.00</AliquotaIVA>
+                        <Natura>N2.1</Natura>
+                        <ImponibileImporto>750.00</ImponibileImporto>
+                        <Imposta>0.00</Imposta>
+                    </DatiRiepilogo>
+                    <DatiRiepilogo>
+                        <AliquotaIVA>0.00</AliquotaIVA>
+                        <Natura>N1</Natura>
+                        <ImponibileImporto>2.00</ImponibileImporto>
+                        <Imposta>0.00</Imposta>
+                    </DatiRiepilogo>
+                </DatiBeniServizi>
+            </xpath>
+            <xpath expr="//FatturaElettronicaBody/DatiGenerali/DatiGeneraliDocumento/ImportoTotaleDocumento" position="replace">
+                <ImportoTotaleDocumento>782.00</ImportoTotaleDocumento>
+            </xpath>
+            <xpath expr="//FatturaElettronicaBody/DatiPagamento/DettaglioPagamento/ImportoPagamento" position="replace">
+                <ImportoPagamento>782.00</ImportoPagamento>
+            </xpath>
+        """
+
+        invoices = self._assert_import_invoice('IT00470550013_pfun3.xml', [{
+            'move_type': 'in_invoice',
+            'amount_untaxed': 752.00,
+            'amount_tax': 30.00,
+            'invoice_line_ids': [
+                {'quantity': 1.0, 'price_unit': 750.00},
+                {'quantity': 1.0, 'price_unit': 2.00},
+            ],
+        }], applied_xml)
+        line_1 = invoices.invoice_line_ids[0]
+        line_2 = invoices.invoice_line_ids[1]
+        self.assertIn(pension_tax.id, line_1.tax_ids.ids)
+        self.assertNotIn(pension_tax.id, line_2.tax_ids.ids)

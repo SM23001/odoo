@@ -376,6 +376,60 @@ class TestAPI(ThreadRecipients):
         self.assertEqual(partner.name, 'Forced Name', 'Forced by additional values')
         self.assertEqual(partner.phone, '+32455998877')
 
+    @users('admin')
+    def test_message_change_thread_move_preserves_subtype(self):
+        lead_src, lead_dst = self.env['mail.test.lead'].create([
+            {'partner_id': self.partner_1.id},
+            {'partner_id': self.user_portal.partner_id.id},
+        ])
+
+        ticket = self.ticket_record.with_env(self.env)
+
+        subtype_with_description, generic_subtype = self.env['mail.message.subtype'].create([
+            {
+                'name': 'Subtype With Description',
+                'description': 'Important Action Done',
+                'res_model': lead_src._name,
+            }, {
+                'name': 'Generic Subtype',
+                'description': 'Generic',
+                'res_model': False,
+            },
+        ])
+
+        # Lead1 message
+        posted_msg = lead_src.message_post(
+            body="Hello message",
+            subtype_id=subtype_with_description.id,
+        )
+        lead_src.message_change_thread(ticket)
+        self.assertMessageFields(posted_msg, {
+            'body': Markup('<p>Important Action Done\n</p><p></p><p>Hello message</p>\n'),  # removed subtype description + old body
+            'subtype_id': self.env['mail.message.subtype'],
+        })
+
+        # Move to lead_dst(same model)
+        posted_msg_2 = lead_src.message_post(
+            body="Hello message",
+            subtype_id=subtype_with_description.id,
+        )
+        lead_src.message_change_thread(lead_dst)
+        self.assertMessageFields(posted_msg_2, {
+            'body': Markup('<p>Hello message</p>'),  # old body only
+            'subtype_id': subtype_with_description,
+        })
+
+        # Generic subtype test (different model)
+        posted_msg_3 = lead_src.message_post(
+            body="Hello message",
+            subtype_id=generic_subtype.id,
+        )
+        lead_src.message_change_thread(ticket)
+        self.assertMessageFields(posted_msg_3, {
+            'body': Markup('<p>Hello message</p>'),  # old body only
+            'subtype_id': generic_subtype,
+        })
+
     @users('employee')
     @warmup
     def test_message_get_default_recipients(self):
@@ -537,14 +591,16 @@ class TestAPI(ThreadRecipients):
     def test_message_get_suggested_recipients(self):
         """ Test default creation values returned for suggested recipient. """
         ticket = self.ticket_record.with_user(self.env.user)
+        # assign to another user so the responsible can be proposed as suggested recipient
+        ticket.user_id = self.user_employee_2
         ticket.message_unsubscribe(ticket.user_id.partner_id.ids)
         suggestions = ticket._message_get_suggested_recipients(no_create=True)
         self.assertEqual(len(suggestions), 2)
         for suggestion, expected in zip(suggestions, [{
             'create_values': {},
-            'email': self.user_employee.email_normalized,
-            'name': self.user_employee.name,
-            'partner_id': self.partner_employee.id,
+            'email': self.user_employee_2.email_normalized,
+            'name': self.user_employee_2.name,
+            'partner_id': self.partner_employee_2.id,
         }, {
             'create_values': {
                 'company_id': self.env.user.company_id.id,
@@ -555,6 +611,21 @@ class TestAPI(ThreadRecipients):
             'partner_id': False,
         }], strict=True):
             self.assertDictEqual(suggestion, expected)
+
+        # assigned should not be added if current user
+        ticket.user_id = self.env.user
+        ticket.message_unsubscribe(ticket.user_id.partner_id.ids)
+        suggestions = ticket._message_get_suggested_recipients(no_create=True)
+        self.assertEqual(len(suggestions), 1)
+        self.assertDictEqual(suggestions[0], {
+            'create_values': {
+                'company_id': self.env.user.company_id.id,
+                'phone': '+32455998877',
+            },
+            'email': 'paulette@test.example.com',
+            'name': 'Paulette Vachette',
+            'partner_id': False,
+        })
 
         # existing partner not linked -> should propose it
         ticket_partner_email = self.env['mail.test.ticket.mc'].create({
