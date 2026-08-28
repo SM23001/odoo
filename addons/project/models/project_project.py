@@ -120,7 +120,7 @@ class ProjectProject(models.Model):
             ('followers', 'Invited internal users'),
             ('invited_users', 'Invited internal and portal users'),
             ('employees', 'All internal users'),
-            ('portal', ' All internal users and invited portal users'),
+            ('portal', 'All internal users and invited portal users'),
         ],
         string='Visibility', required=True,
         default='portal',
@@ -512,7 +512,7 @@ class ProjectProject(models.Model):
             for follower in old_project.message_follower_ids:
                 new_project.message_subscribe(partner_ids=follower.partner_id.ids, subtype_ids=follower.subtype_ids.ids)
             if old_project.allow_milestones:
-                new_project.milestone_ids = self.milestone_ids.copy().ids
+                new_project.milestone_ids = old_project.milestone_ids.copy().ids
             if 'tasks' not in default:
                 old_project.map_tasks(new_project.id)
             if not old_project.active:
@@ -1230,9 +1230,9 @@ class ProjectProject(models.Model):
             elif project.privacy_visibility in ['invited_users', 'portal']:
                 portal_users = project.message_partner_ids.user_ids.filtered('share')
                 project.message_unsubscribe(partner_ids=portal_users.partner_id.ids)
-                project.tasks._unsubscribe_portal_users()
+                project.with_context(active_test=False).tasks._unsubscribe_portal_users()
                 # revoke access_token since the project and its tasks are no longer accessible for portal/public users
-                project.tasks.access_token = ''
+                project.with_context(active_test=False).tasks.access_token = ''
                 project.access_token = ''
 
     # ---------------------------------------------------

@@ -16,6 +16,7 @@ import {
 } from "@html_editor/utils/base_container";
 import { DIRECTIONS } from "../utils/position";
 import { isHtmlContentSupported } from "./selection_plugin";
+import { getRowIndex } from "@html_editor/utils/table";
 
 /**
  * @typedef { import("./selection_plugin").EditorSelection } EditorSelection
@@ -94,7 +95,7 @@ export const CLIPBOARD_WHITELISTS = {
         /^btn/,
         /^fa/,
     ],
-    attributes: ["class", "href", "src", "target"],
+    attributes: ["class", "href", "src", "target", "colspan", "rowspan"],
     styledTags: ["SPAN", "B", "STRONG", "I", "S", "U", "FONT", "TD"],
 };
 
@@ -494,6 +495,11 @@ export class ClipboardPlugin extends Plugin {
             }
         } else if (node.nodeType !== Node.TEXT_NODE) {
             if (["TD", "TH"].includes(node.nodeName)) {
+                // Convert table headers to cells when they are not
+                // in the first row.
+                if (node.nodeName === "TH" && getRowIndex(node) !== 0) {
+                    node = this.dependencies.dom.setTagName(node, "td");
+                }
                 // Insert base container into empty TD.
                 if (isEmptyBlock(node)) {
                     const baseContainer = this.dependencies.baseContainer.createBaseContainer();
@@ -670,6 +676,16 @@ export class ClipboardPlugin extends Plugin {
                 const range = this.document.caretRangeFromPoint(ev.clientX, ev.clientY);
                 deleteAndSetSelection(range.startContainer, range.startOffset);
             }
+        }
+        if (
+            this.delegateTo(
+                "html_drop_overrides",
+                this.dependencies.selection.getEditableSelection(),
+                ev.dataTransfer
+            )
+        ) {
+            this.dependencies.history.addStep();
+            return;
         }
         if (odooEditorHtml) {
             const fragment = parseHTML(this.document, odooEditorHtml);

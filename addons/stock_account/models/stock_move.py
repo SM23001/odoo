@@ -331,9 +331,10 @@ class StockMove(models.Model):
                     continue
                 if correction_quantity:
                     previous_qty = move.quantity - correction_quantity
-                    ratio = correction_quantity / previous_qty if previous_qty else 0
-                    move.value += ratio * move.value
-                    continue
+                    if previous_qty:
+                        ratio = correction_quantity / previous_qty
+                        move.value += ratio * move.value
+                        continue
                 if move.product_id.lot_valuated:
                     value = 0.0
                     for move_line in move.move_line_ids:
@@ -450,9 +451,9 @@ class StockMove(models.Model):
 
     def _get_valued_qty(self, lot=None):
         self.ensure_one()
-        if self._is_in():
+        if (self.state == 'done' and self.is_in) or (self.state != 'done' and self._is_in()):
             return sum(self._get_in_move_lines(lot).mapped('quantity_product_uom'))
-        if self._is_out():
+        if (self.state == 'done' and self.is_out) or (self.state != 'done' and self._is_out()):
             return sum(self._get_out_move_lines(lot).mapped('quantity_product_uom'))
         if self.is_dropship:
             if lot:
@@ -704,7 +705,7 @@ class StockMove(models.Model):
         dropship_moves = self.filtered(lambda m: m._is_dropshipped() or m._is_dropshipped_returned())
         dropship_quantity = sum(m._get_valued_qty() for m in dropship_moves)
         dropship_price_unit = dropship_moves._get_price_unit_dropshipped()
-        regular_moves = self - dropship_moves
+        regular_moves = (self - dropship_moves).filtered(lambda m: m.is_out)
         regular_quantity = sum(m._get_valued_qty() for m in regular_moves)
         regular_price_unit = regular_moves._get_price_unit()
         total_quantity = dropship_quantity + regular_quantity
